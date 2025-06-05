@@ -81,8 +81,9 @@
       d3.csv("listings.csv")
     ]).then(function([geo, dat]){
       geojson = geo;
+      // 修正 price 字段的解析，去掉$和逗号，转为数字
       data = dat.map(d => {
-        d.price = +d.price || 0;
+        d.price = parseFloat((d.price || "").replace(/[\$,]/g, "")) || 0;
         d.latitude = +d.latitude;
         d.longitude = +d.longitude;
         d.room_type = d.room_type || d['room_type'] || "未知";
@@ -219,7 +220,7 @@
         .join("tr")
         .html(d => `
           <td>${d.name || ""}</td>
-          <td>${d.price}</td>
+          <td>$${d.price}</td>
           <td>${d.room_type}</td>
           <td>${d.host_name || ""}</td>
         `);
