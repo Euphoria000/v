@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Albany Airbnb D3 可视化</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 40px; }
+    .chart-area { display: flex; gap: 40px; }
+    .sidebar { min-width: 200px; }
+    .main { flex: 1; }
+    .axis path, .axis line { fill: none; stroke: #aaa; shape-rendering: crispEdges; }
+    .bar { fill: steelblue; }
+    .bar:hover { fill: orange; }
+    .bubble { opacity: 0.7; }
+    .bubble.selected { stroke: red; stroke-width: 2; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 3px 8px; }
+    th { background: #f6f6f6; }
+  </style>
+</head>
+<body>
+  <h1>Albany Airbnb 房源可视化 (D3.js Demo)</h1>
+  <div class="chart-area">
+    <div class="sidebar">
+      <label>价格区间<br>
+        <input type="range" min="0" max="500" value="0" id="priceMin" style="width:90px;">
+        ~
+        <input type="range" min="0" max="500" value="500" id="priceMax" style="width:90px;">
+        <span id="priceRangeLabel"></span>
+      </label>
+      <br><br>
+      <label>房型筛选<br>
+        <select multiple size="4" id="roomTypeSelect"></select>
+      </label>
+    </div>
+    <div class="main">
+      <svg id="barChart" width="480" height="240"></svg>
+      <svg id="bubbleMap" width="480" height="320"></svg>
+    </div>
+  </div>
+  <div>
+    <h3>房源列表（筛选结果）</h3>
+    <table id="listingTable">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>价格</th>
+          <th>类型</th>
+          <th>主机</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <script>
+    // 1. 读取CSV
+    d3.csv("listings.csv").then(data => {
+      // 数据预处理
+      data = data.map(d => {
+        d.price = +d.price || 0;
+        d.latitude = +d.latitude;
+        d.longitude = +d.longitude;
+        d.room_type = d.room_type || d['room_type'] || "未知";
+        return d;
+      });
+
+      // 价格区间
+      const priceExtent = d3.extent(data, d => d.price);
+      d3.select("#priceMin").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[0]);
+      d3.select("#priceMax").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[1]);
+
+      // 房型选项
+      const roomTypes = Array.from(new Set(data.map(d => d.room_type))).filter(Boolean);
+      d3.select("#roomTypeSelect").selectAll("option")
+        .data(roomTypes)
+        .join("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      // 图表刷新逻辑
+      function update() {
+        // 获取筛选条件
+        const minPrice = +d3.select("#priceMin").property("value");
+        const maxPrice = +d3.select("#priceMax").property("value");
+        const selectedTypes = Array.from(d3.select("#roomTypeSelect").property("selectedOptions")).map(d => d.value);
+
+        d3.select("#priceRangeLabel").text(`${minPrice}~${maxPrice}`);
+
+        // 过滤数据
+        const filtered = data.filter(d =>
+          d.price >= minPrice &&
+          d.price <= maxPrice &&
+          (selectedTypes.length === 0 || selectedTypes.includes(d.room_type))
+        );
+
+        // 1. 柱状图（价格分布）
+        const svgBar = d3.select("#barChart");
+        svgBar.selectAll("*").remove();
+        const margin = {top:30, right:20, bottom:30, left:50};
+        const width = +svgBar.attr("width") - margin.left - margin.right;
+        const height = +svgBar.attr("height") - margin.top - margin.bottom;
+        const g = svgBar.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+        const x = d3.scaleLinear().domain([minPrice, maxPrice]).range([0, width]);
+        const bins = d3.bin().thresholds(20).value(d => d.price)(filtered);
+        const y = d3.scaleLinear().domain([0, d3.max(bins, d => d.length)]).range([height, 0]);
+        g.append("g").call(d3.axisLeft(y));
+        g.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+        g.selectAll(".bar")
+          .data(bins)
+          .join("rect")
+          .attr("class", "bar")
+          .attr("x", d => x(d.x0))
+          .attr("width", d => Math.max(1, x(d.x1) - x(d.x0) - 1))
+          .attr("y", d => y(d.length))
+          .attr("height", d => height - y(d.length));
+
+        // 2. 气泡地图（经纬度）
+        const svgMap = d3.select("#bubbleMap");
+        svgMap.selectAll("*").remove();
+        // 简单线性映射到SVG区域（不是真正地图）
+        const latExtent = d3.extent(filtered, d => d.latitude);
+        const lonExtent = d3.extent(filtered, d => d.longitude);
+        const mapW = +svgMap.attr("width"), mapH = +svgMap.attr("height");
+        const latScale = d3.scaleLinear().domain(latExtent).range([mapH-20, 20]);
+        const lonScale = d3.scaleLinear().domain(lonExtent).range([20, mapW-20]);
+        svgMap.selectAll("circle")
+          .data(filtered)
+          .join("circle")
+          .attr("class", "bubble")
+          .attr("cx", d => lonScale(d.longitude))
+          .attr("cy", d => latScale(d.latitude))
+          .attr("r", d => Math.sqrt(d.price)/2 + 3)
+          .attr("fill", "skyblue")
+          .attr("stroke", "#333")
+          .on("mouseover", function(e, d){
+            d3.select(this).attr("stroke", "red").attr("stroke-width", 3);
+            // 显示tooltip
+            const tt = svgMap.append("g").attr("id","tooltip");
+            tt.append("rect").attr("x", lonScale(d.longitude)+10).attr("y", latScale(d.latitude)-20).attr("width", 180).attr("height", 50).attr("fill","#fff").attr("stroke","#aaa");
+            tt.append("text").attr("x", lonScale(d.longitude)+15).attr("y", latScale(d.latitude)-5)
+             .text(`名称: ${d.name || ''}`);
+            tt.append("text").attr("x", lonScale(d.longitude)+15).attr("y", latScale(d.latitude)+15)
+             .text(`价格: $${d.price} 类型: ${d.room_type}`);
+          })
+          .on("mouseout", function(){
+            d3.select(this).attr("stroke", "#333").attr("stroke-width", 1);
+            svgMap.select("#tooltip").remove();
+          });
+
+        // 3. 表格
+        const tbody = d3.select("#listingTable tbody");
+        tbody.selectAll("tr").remove();
+        tbody.selectAll("tr")
+          .data(filtered.slice(0, 50)) // 最多显示50行
+          .join("tr")
+          .html(d => `
+            <td>${d.name || ""}</td>
+            <td>${d.price}</td>
+            <td>${d.room_type}</td>
+            <td>${d.host_name || ""}</td>
+          `);
+      }
+
+      // 事件绑定
+      d3.selectAll("#priceMin, #priceMax, #roomTypeSelect").on("input", update);
+
+      // 初始化
+      d3.select("#roomTypeSelect").selectAll("option").property("selected", true);
+      update();
+    });
+  </script>
+</body>
+</html>

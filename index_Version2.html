@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Albany Airbnb 地理气泡图（D3 + 投影）</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 40px; }
+    .bubble { opacity: 0.7; cursor:pointer; }
+    .bubble:hover { stroke:red; stroke-width:2; }
+    .borough { fill: #eee; stroke: #999; stroke-width: 1; }
+    .borough:hover { fill: #ffe; }
+    #tooltip {
+      position: absolute;
+      background: rgba(255,255,255,.97);
+      padding: 8px 16px;
+      border: 1px solid #aaa;
+      pointer-events: none;
+      box-shadow: 2px 2px 8px #eee;
+      font-size: 13px;
+      border-radius: 3px;
+      display:none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Albany Airbnb 房源地理气泡图（带投影）</h1>
+  <svg id="geoMap" width="900" height="600"></svg>
+  <div id="tooltip"></div>
+  <script>
+    // 画布大小
+    const width = 900, height = 600;
+    const svg = d3.select("#geoMap");
+
+    // 地理投影（可选用 geoMercator/geoAlbersUsa/geoConicConformal 等，视数据覆盖区域调整）
+    const projection = d3.geoMercator()
+      .scale(1) // 先设1，稍后自适应
+      .translate([0, 0]);
+    const path = d3.geoPath().projection(projection);
+
+    // 异步加载
+    Promise.all([
+      d3.json("boroughs.geojson"),
+      d3.csv("listings.csv", d => ({
+        ...d,
+        latitude: +d.latitude,
+        longitude: +d.longitude,
+        price: +d.price || 0,
+        name: d.name || "",
+        room_type: d.room_type || d['room_type'] || "",
+      }))
+    ]).then(([geojson, data]) => {
+
+      // 计算投影比例和偏移，使地图自适应画布
+      const geoBounds = d3.geoBounds(geojson);
+      const center = d3.geoCentroid(geojson);
+      const [[x0, y0], [x1, y1]] = geoBounds;
+      const geoWidth = x1 - x0, geoHeight = y1 - y0;
+
+      // 计算缩放比例
+      const s = .95 / Math.max(geoWidth / width, geoHeight / height);
+      const t = [width / 2, height / 2];
+
+      projection
+        .scale(s * 150) // Mercator 默认是150，视区域调整
+        .center(center)
+        .translate(t);
+
+      // 1. 绘制GeoJSON底图
+      svg.append("g")
+        .attr("class","boroughs")
+        .selectAll("path")
+        .data(geojson.features)
+        .join("path")
+        .attr("class", "borough")
+        .attr("d", path)
+        .append("title")
+        .text(d => d.properties.BoroName);
+
+      // 2. 绘制气泡
+      const bubbleG = svg.append("g").attr("class","bubbles");
+      bubbleG.selectAll("circle")
+        .data(data.filter(d => d.latitude && d.longitude))
+        .join("circle")
+        .attr("class", "bubble")
+        .attr("cx", d => projection([d.longitude, d.latitude])[0])
+        .attr("cy", d => projection([d.longitude, d.latitude])[1])
+        .attr("r", d => Math.sqrt(d.price)/2 + 3)
+        .attr("fill", "skyblue")
+        .attr("stroke", "#333")
+        .on("mouseover", function(e, d){
+          d3.select(this).attr("stroke", "red").attr("stroke-width", 2);
+          showTooltip(e, d);
+        })
+        .on("mousemove", showTooltip)
+        .on("mouseout", function(){
+          d3.select(this).attr("stroke", "#333").attr("stroke-width", 1);
+          hideTooltip();
+        });
+
+      // 3. 可选：添加 borough label
+      svg.append("g").selectAll("text")
+        .data(geojson.features)
+        .join("text")
+        .attr("x", d => path.centroid(d)[0])
+        .attr("y", d => path.centroid(d)[1])
+        .attr("text-anchor", "middle")
+        .attr("dy", ".35em")
+        .attr("fill", "#666")
+        .attr("font-size", "12px")
+        .attr("pointer-events","none")
+        .text(d => d.properties.BoroName);
+
+      // 4. 工具提示
+      function showTooltip(event, d) {
+        const tt = d3.select("#tooltip");
+        tt.style("display", "block")
+          .style("left", (event.pageX+15)+"px")
+          .style("top", (event.pageY-10)+"px")
+          .html(`<b>${d.name}</b><br>价格: $${d.price}<br>类型: ${d.room_type}`);
+      }
+      function hideTooltip() {
+        d3.select("#tooltip").style("display", "none");
+      }
+
+    });
+  </script>
+</body>
+</html>
