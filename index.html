@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <title>Albany Airbnb D3 可视化（含地理投影）</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!-- turf.js 用于点是否在多边形内判断 -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 40px; }
     .chart-area { display: flex; gap: 40px; }
@@ -14,7 +16,8 @@
     .bar:hover { fill: orange; }
     .bubble { opacity: 0.7; cursor:pointer; }
     .bubble.selected { stroke: red; stroke-width: 2; }
-    .borough { fill: #eee; stroke: #999; stroke-width: 1; }
+    .borough { fill: #eee; stroke: #999; stroke-width: 1; cursor:pointer; }
+    .borough.selected { fill: #ffe066 !important; }
     .borough:hover { fill: #ffe; }
     table { border-collapse: collapse; width: 100%; margin-top: 20px; }
     th, td { border: 1px solid #ddd; padding: 3px 8px; }
@@ -86,6 +89,11 @@
           <option value="review_scores_value">性价比</option>
         </select>
       </div>
+      <div class="selector-group">
+        <label class="selector-label">区域筛选</label>
+        <span id="selectedBoroughLabel" style="color:#0066cc;"></span>
+        <div style="color:#999;font-size:12px;">（可点击地图区域交互筛选，重复点击取消）</div>
+      </div>
     </div>
     <div class="main">
       <svg id="barChart" width="480" height="240"></svg>
@@ -114,6 +122,7 @@
     let data = null;
     let projection = null;
     let geoPath = null;
+    let selectedBorough = null; // 当前选中的区块 feature
 
     // 支持的散点图 x 轴变量
     const scatterFields = [
@@ -128,7 +137,7 @@
 
     // 数据和地图同时加载
     Promise.all([
-      d3.json("boroughs.geojson"),
+      d3.json("neighbourhoods.geojson"),
       d3.csv("listings.csv")
     ]).then(function([geo, dat]){
       geojson = geo;
@@ -174,6 +183,15 @@
         .on("input", update);
     });
 
+    function isPointInPolygon(lon, lat, boroughFeature) {
+      if (!boroughFeature) return true;
+      if (!lon || !lat) return false;
+      return turf.booleanPointInPolygon(
+        turf.point([lon, lat]),
+        boroughFeature
+      );
+    }
+
     function update() {
       if(!geojson || !data) return;
 
@@ -191,9 +209,12 @@
       const bathroomsMax = +d3.select("#bathroomsMax").property("value") || Infinity;
       const scatterX = d3.select("#scatterXSelect").property("value");
 
+      // 区域文字
+      d3.select("#selectedBoroughLabel").text(selectedBorough ? (selectedBorough.properties.BoroName||'') : '');
+
       d3.select("#priceRangeLabel").text(`${minPrice}~${maxPrice}`);
 
-      // 过滤数据
+      // 过滤数据，增加地理区域判断
       const filtered = data.filter(d =>
         d.price >= minPrice &&
         d.price <= maxPrice &&
@@ -206,7 +227,8 @@
         d.beds <= bedsMax &&
         d.bathrooms >= bathroomsMin &&
         d.bathrooms <= bathroomsMax &&
-        d.latitude && d.longitude
+        d.latitude && d.longitude &&
+        isPointInPolygon(d.longitude, d.latitude, selectedBorough)
       );
 
       // 柱状图（价格分布）
@@ -230,18 +252,46 @@
         .attr("y", d => y(d.length))
         .attr("height", d => height - y(d.length));
 
-      // 地理气泡地图
+      // 地理气泡地图，支持区块高亮和点击
       const svgMap = d3.select("#geoMap");
       svgMap.selectAll("*").remove();
+
+      // 区域可点击高亮
       svgMap.append("g")
         .attr("class","boroughs")
         .selectAll("path")
         .data(geojson.features)
         .join("path")
-        .attr("class", "borough")
+        .attr("class", d => "borough" + (selectedBorough && d === selectedBorough ? " selected" : ""))
         .attr("d", geoPath)
+        .attr("fill", d => selectedBorough && d === selectedBorough ? "#ffe066" : "#eee")
+        .attr("stroke", "#999")
+        .on("click", function(e, d){
+          if(selectedBorough === d){
+            selectedBorough = null;
+          }else{
+            selectedBorough = d;
+          }
+          update();
+          e.stopPropagation();
+        })
         .append("title")
         .text(d => d.properties.BoroName);
+
+      // 区名字
+      svgMap.append("g").selectAll("text")
+        .data(geojson.features)
+        .join("text")
+        .attr("x", d => geoPath.centroid(d)[0])
+        .attr("y", d => geoPath.centroid(d)[1])
+        .attr("text-anchor", "middle")
+        .attr("dy", ".35em")
+        .attr("fill", "#666")
+        .attr("font-size", "12px")
+        .attr("pointer-events","none")
+        .text(d => d.properties.BoroName);
+
+      // 气泡点
       const bubbleG = svgMap.append("g").attr("class","bubbles");
       bubbleG.selectAll("circle")
         .data(filtered)
@@ -267,40 +317,25 @@
           d3.select(this).attr("stroke", "#333").attr("stroke-width", 1);
           hideTooltip();
         });
-      svgMap.append("g").selectAll("text")
-        .data(geojson.features)
-        .join("text")
-        .attr("x", d => geoPath.centroid(d)[0])
-        .attr("y", d => geoPath.centroid(d)[1])
-        .attr("text-anchor", "middle")
-        .attr("dy", ".35em")
-        .attr("fill", "#666")
-        .attr("font-size", "12px")
-        .attr("pointer-events","none")
-        .text(d => d.properties.BoroName);
 
-      // 新增：散点图，x轴可选，y轴固定为price
+      // 散点图
       const svgScatter = d3.select("#scatterPlot");
       svgScatter.selectAll("*").remove();
       const marginS = {top: 36, right: 30, bottom: 40, left: 56};
       const widthS = +svgScatter.attr("width") - marginS.left - marginS.right;
       const heightS = +svgScatter.attr("height") - marginS.top - marginS.bottom;
       const scatterG = svgScatter.append("g").attr("transform", `translate(${marginS.left},${marginS.top})`);
-
-      // 只要x/y都有数值
       const scatterData = filtered.filter(d => d[scatterX] && d.price);
       if (scatterData.length > 0) {
         const xExtent = d3.extent(scatterData, d => d[scatterX]);
         const yExtent = d3.extent(scatterData, d => d.price);
         const xScale = d3.scaleLinear().domain(xExtent).nice().range([0, widthS]);
         const yScale = d3.scaleLinear().domain(yExtent).nice().range([heightS, 0]);
-        // 坐标轴
         scatterG.append("g").attr("class","x axis")
           .attr("transform", `translate(0,${heightS})`)
           .call(d3.axisBottom(xScale));
         scatterG.append("g").attr("class","y axis")
           .call(d3.axisLeft(yScale));
-        // 轴标题
         scatterG.append("text")
           .attr("class","x label")
           .attr("x", widthS/2)
@@ -316,7 +351,6 @@
           .attr("text-anchor","middle")
           .attr("font-size","13px")
           .text("价格");
-        // 点
         scatterG.selectAll("circle")
           .data(scatterData)
           .join("circle")
@@ -382,6 +416,15 @@
     function hideTooltip() {
       d3.select("#tooltip").style("display", "none");
     }
+
+    // 点击地图空白处取消区筛选
+    d3.select("body").on("click", function(e){
+      // 只要不是点击在path（区块）上就取消
+      if(e.target.tagName !== "path") {
+        selectedBorough = null;
+        update();
+      }
+    });
   </script>
 </body>
 </html>
