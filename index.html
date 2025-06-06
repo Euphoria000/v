@@ -116,315 +116,327 @@
     </table>
   </div>
   <div id="tooltip"></div>
-  <script>
-    // 全局变量
-    let geojson = null;
-    let data = null;
-    let projection = null;
-    let geoPath = null;
-    let selectedBorough = null; // 当前选中的区块 feature
+<script>
+let geojson = null;
+let data = null;
+let projection = null;
+let geoPath = null;
+let selectedBorough = null;
 
-    // 支持的散点图 x 轴变量
-    const scatterFields = [
-      "review_scores_rating",
-      "review_scores_accuracy",
-      "review_scores_cleanliness",
-      "review_scores_checkin",
-      "review_scores_communication",
-      "review_scores_location",
-      "review_scores_value"
-    ];
+const scatterFields = [
+  "review_scores_rating",
+  "review_scores_accuracy",
+  "review_scores_cleanliness",
+  "review_scores_checkin",
+  "review_scores_communication",
+  "review_scores_location",
+  "review_scores_value"
+];
 
-    // 数据和地图同时加载
-    Promise.all([
-      d3.json("neighbourhoods.geojson"),
-      d3.csv("listings.csv")
-    ]).then(function([geo, dat]){
-      geojson = geo;
-      // 修正 price 字段的解析，去掉$和逗号，转为数字
-      data = dat.map(d => {
-        d.price = parseFloat((d.price || "").replace(/[\$,]/g, "")) || 0;
-        d.latitude = +d.latitude;
-        d.longitude = +d.longitude;
-        d.room_type = d.room_type || d['room_type'] || "未知";
-        d.accommodates = +d.accommodates || 0;
-        d.bedrooms = +d.bedrooms || 0;
-        d.beds = +d.beds || 0;
-        d.bathrooms = +d.bathrooms || parseFloat((d.bathrooms_text || "").replace(/[^\d\.]/g, "")) || 0;
-        // 转换散点支持的所有评分指标
-        scatterFields.forEach(f => d[f] = +d[f] || 0);
-        return d;
-      });
+let geoMapZoom = d3.zoomIdentity;
 
-      // 价格区间
-      const priceExtent = d3.extent(data, d => d.price);
-      d3.select("#priceMin").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[0]);
-      d3.select("#priceMax").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[1]);
+Promise.all([
+  d3.json("neighbourhoods.geojson"),
+  d3.csv("listings.csv")
+]).then(function([geo, dat]){
+  geojson = geo;
+  data = dat.map(d => {
+    d.price = parseFloat((d.price || "").replace(/[\$,]/g, "")) || 0;
+    d.latitude = +d.latitude;
+    d.longitude = +d.longitude;
+    d.room_type = d.room_type || d['room_type'] || "未知";
+    d.accommodates = +d.accommodates || 0;
+    d.bedrooms = +d.bedrooms || 0;
+    d.beds = +d.beds || 0;
+    d.bathrooms = +d.bathrooms || parseFloat((d.bathrooms_text || "").replace(/[^\d\.]/g, "")) || 0;
+    scatterFields.forEach(f => d[f] = +d[f] || 0);
+    return d;
+  });
 
-      // 房型选项
-      const roomTypes = Array.from(new Set(data.map(d => d.room_type))).filter(Boolean);
-      d3.select("#roomTypeSelect").selectAll("option")
-        .data(roomTypes)
-        .join("option")
-        .attr("value", d => d)
-        .text(d => d);
+  // 价格区间
+  const priceExtent = d3.extent(data, d => d.price);
+  d3.select("#priceMin").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[0]);
+  d3.select("#priceMax").attr("min", priceExtent[0]).attr("max", priceExtent[1]).property("value", priceExtent[1]);
 
-      // 地理投影初始化
-      const width = 480, height = 320;
-      projection = d3.geoMercator();
-      geoPath = d3.geoPath().projection(projection);
-      projection.fitSize([width, height], geojson);
+  // 房型选项
+  const roomTypes = Array.from(new Set(data.map(d => d.room_type))).filter(Boolean);
+  d3.select("#roomTypeSelect").selectAll("option")
+    .data(roomTypes)
+    .join("option")
+    .attr("value", d => d)
+    .text(d => d);
 
-      // 初始选中全部
-      d3.select("#roomTypeSelect").selectAll("option").property("selected", true);
-      update();
-      // 监听筛选器
-      d3.selectAll("#priceMin, #priceMax, #roomTypeSelect, #scatterXSelect, #accommodatesMin, #accommodatesMax, #bedroomsMin, #bedroomsMax, #bedsMin, #bedsMax, #bathroomsMin, #bathroomsMax")
-        .on("input", update);
-    });
+  // 地理投影初始化
+  const width = 480, height = 320;
+  projection = d3.geoMercator();
+  geoPath = d3.geoPath().projection(projection);
+  projection.fitSize([width, height], geojson);
 
-    function isPointInPolygon(lon, lat, boroughFeature) {
-      if (!boroughFeature) return true;
-      if (!lon || !lat) return false;
-      return turf.booleanPointInPolygon(
-        turf.point([lon, lat]),
-        boroughFeature
-      );
-    }
+  d3.select("#roomTypeSelect").selectAll("option").property("selected", true);
+  update();
 
-    function update() {
-      if(!geojson || !data) return;
+  d3.selectAll("#priceMin, #priceMax, #roomTypeSelect, #scatterXSelect, #accommodatesMin, #accommodatesMax, #bedroomsMin, #bedroomsMax, #bedsMin, #bedsMax, #bathroomsMin, #bathroomsMax")
+    .on("input", update);
+});
 
-      // 获取筛选条件
-      const minPrice = +d3.select("#priceMin").property("value");
-      const maxPrice = +d3.select("#priceMax").property("value");
-      const selectedTypes = Array.from(d3.select("#roomTypeSelect").property("selectedOptions")).map(d => d.value);
-      const accommodatesMin = +d3.select("#accommodatesMin").property("value") || 0;
-      const accommodatesMax = +d3.select("#accommodatesMax").property("value") || Infinity;
-      const bedroomsMin = +d3.select("#bedroomsMin").property("value") || 0;
-      const bedroomsMax = +d3.select("#bedroomsMax").property("value") || Infinity;
-      const bedsMin = +d3.select("#bedsMin").property("value") || 0;
-      const bedsMax = +d3.select("#bedsMax").property("value") || Infinity;
-      const bathroomsMin = +d3.select("#bathroomsMin").property("value") || 0;
-      const bathroomsMax = +d3.select("#bathroomsMax").property("value") || Infinity;
-      const scatterX = d3.select("#scatterXSelect").property("value");
+function isPointInPolygon(lon, lat, boroughFeature) {
+  if (!boroughFeature) return true;
+  if (!lon || !lat) return false;
+  return turf.booleanPointInPolygon(
+    turf.point([lon, lat]),
+    boroughFeature
+  );
+}
 
-      // 区域文字
-      d3.select("#selectedBoroughLabel").text(selectedBorough ? (selectedBorough.properties.BoroName||'') : '');
+function update() {
+  if(!geojson || !data) return;
 
-      d3.select("#priceRangeLabel").text(`${minPrice}~${maxPrice}`);
+  // 获取筛选条件
+  const minPrice = +d3.select("#priceMin").property("value");
+  const maxPrice = +d3.select("#priceMax").property("value");
+  const selectedTypes = Array.from(d3.select("#roomTypeSelect").property("selectedOptions")).map(d => d.value);
+  const accommodatesMin = +d3.select("#accommodatesMin").property("value") || 0;
+  const accommodatesMax = +d3.select("#accommodatesMax").property("value") || Infinity;
+  const bedroomsMin = +d3.select("#bedroomsMin").property("value") || 0;
+  const bedroomsMax = +d3.select("#bedroomsMax").property("value") || Infinity;
+  const bedsMin = +d3.select("#bedsMin").property("value") || 0;
+  const bedsMax = +d3.select("#bedsMax").property("value") || Infinity;
+  const bathroomsMin = +d3.select("#bathroomsMin").property("value") || 0;
+  const bathroomsMax = +d3.select("#bathroomsMax").property("value") || Infinity;
+  const scatterX = d3.select("#scatterXSelect").property("value");
 
-      // 过滤数据，增加地理区域判断
-      const filtered = data.filter(d =>
-        d.price >= minPrice &&
-        d.price <= maxPrice &&
-        (selectedTypes.length === 0 || selectedTypes.includes(d.room_type)) &&
-        d.accommodates >= accommodatesMin &&
-        d.accommodates <= accommodatesMax &&
-        d.bedrooms >= bedroomsMin &&
-        d.bedrooms <= bedroomsMax &&
-        d.beds >= bedsMin &&
-        d.beds <= bedsMax &&
-        d.bathrooms >= bathroomsMin &&
-        d.bathrooms <= bathroomsMax &&
-        d.latitude && d.longitude &&
-        isPointInPolygon(d.longitude, d.latitude, selectedBorough)
-      );
+  d3.select("#selectedBoroughLabel").text(selectedBorough ? (selectedBorough.properties.BoroName||'') : '');
+  d3.select("#priceRangeLabel").text(`${minPrice}~${maxPrice}`);
 
-      // 柱状图（价格分布）
-      const svgBar = d3.select("#barChart");
-      svgBar.selectAll("*").remove();
-      const margin = {top:30, right:20, bottom:30, left:50};
-      const width = +svgBar.attr("width") - margin.left - margin.right;
-      const height = +svgBar.attr("height") - margin.top - margin.bottom;
-      const g = svgBar.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-      const x = d3.scaleLinear().domain([minPrice, maxPrice]).range([0, width]);
-      const bins = d3.bin().thresholds(20).value(d => d.price)(filtered);
-      const y = d3.scaleLinear().domain([0, d3.max(bins, d => d.length) || 1]).range([height, 0]);
-      g.append("g").call(d3.axisLeft(y));
-      g.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
-      g.selectAll(".bar")
-        .data(bins)
-        .join("rect")
-        .attr("class", "bar")
-        .attr("x", d => x(d.x0))
-        .attr("width", d => Math.max(1, x(d.x1) - x(d.x0) - 1))
-        .attr("y", d => y(d.length))
-        .attr("height", d => height - y(d.length));
+  const filtered = data.filter(d =>
+    d.price >= minPrice &&
+    d.price <= maxPrice &&
+    (selectedTypes.length === 0 || selectedTypes.includes(d.room_type)) &&
+    d.accommodates >= accommodatesMin &&
+    d.accommodates <= accommodatesMax &&
+    d.bedrooms >= bedroomsMin &&
+    d.bedrooms <= bedroomsMax &&
+    d.beds >= bedsMin &&
+    d.beds <= bedsMax &&
+    d.bathrooms >= bathroomsMin &&
+    d.bathrooms <= bathroomsMax &&
+    d.latitude && d.longitude &&
+    isPointInPolygon(d.longitude, d.latitude, selectedBorough)
+  );
 
-      // 地理气泡地图，支持区块高亮和点击
-      const svgMap = d3.select("#geoMap");
-      svgMap.selectAll("*").remove();
+  // 柱状图
+  const svgBar = d3.select("#barChart");
+  svgBar.selectAll("*").remove();
+  const margin = {top:30, right:20, bottom:30, left:50};
+  const width = +svgBar.attr("width") - margin.left - margin.right;
+  const height = +svgBar.attr("height") - margin.top - margin.bottom;
+  const g = svgBar.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+  const x = d3.scaleLinear().domain([minPrice, maxPrice]).range([0, width]);
+  const bins = d3.bin().thresholds(20).value(d => d.price)(filtered);
+  const y = d3.scaleLinear().domain([0, d3.max(bins, d => d.length) || 1]).range([height, 0]);
+  g.append("g").call(d3.axisLeft(y));
+  g.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+  g.selectAll(".bar")
+    .data(bins)
+    .join("rect")
+    .attr("class", "bar")
+    .attr("x", d => x(d.x0))
+    .attr("width", d => Math.max(1, x(d.x1) - x(d.x0) - 1))
+    .attr("y", d => y(d.length))
+    .attr("height", d => height - y(d.length));
 
-      // 区域可点击高亮
-      svgMap.append("g")
-        .attr("class","boroughs")
-        .selectAll("path")
-        .data(geojson.features)
-        .join("path")
-        .attr("class", d => "borough" + (selectedBorough && d === selectedBorough ? " selected" : ""))
-        .attr("d", geoPath)
-        .attr("fill", d => selectedBorough && d === selectedBorough ? "#ffe066" : "#eee")
-        .attr("stroke", "#999")
-        .on("click", function(e, d){
-          if(selectedBorough === d){
-            selectedBorough = null;
-          }else{
-            selectedBorough = d;
-          }
-          update();
-          e.stopPropagation();
-        })
-        .append("title")
-        .text(d => d.properties.BoroName);
+  // 地图缩放
+  const svgMap = d3.select("#geoMap");
+  svgMap.selectAll("*").remove();
+  let gMap = svgMap.append("g").attr("class", "zoom-group");
+  gMap.attr("transform", geoMapZoom);
 
-      // 区名字
-      svgMap.append("g").selectAll("text")
-        .data(geojson.features)
-        .join("text")
-        .attr("x", d => geoPath.centroid(d)[0])
-        .attr("y", d => geoPath.centroid(d)[1])
-        .attr("text-anchor", "middle")
-        .attr("dy", ".35em")
-        .attr("fill", "#666")
-        .attr("font-size", "12px")
-        .attr("pointer-events","none")
-        .text(d => d.properties.BoroName);
-
-      // 气泡点
-      const bubbleG = svgMap.append("g").attr("class","bubbles");
-      bubbleG.selectAll("circle")
-        .data(filtered)
-        .join("circle")
-        .attr("class", "bubble")
-        .attr("cx", d => {
-          const p = projection([d.longitude, d.latitude]);
-          return p ? p[0] : -9999;
-        })
-        .attr("cy", d => {
-          const p = projection([d.longitude, d.latitude]);
-          return p ? p[1] : -9999;
-        })
-        .attr("r", d => Math.max(3, Math.sqrt(d.price)/2 + 3))
-        .attr("fill", "skyblue")
-        .attr("stroke", "#333")
-        .on("mouseover", function(e, d){
-          d3.select(this).attr("stroke", "red").attr("stroke-width", 2);
-          showTooltip(e, d);
-        })
-        .on("mousemove", showTooltip)
-        .on("mouseout", function(){
-          d3.select(this).attr("stroke", "#333").attr("stroke-width", 1);
-          hideTooltip();
-        });
-
-      // 散点图
-      const svgScatter = d3.select("#scatterPlot");
-      svgScatter.selectAll("*").remove();
-      const marginS = {top: 36, right: 30, bottom: 40, left: 56};
-      const widthS = +svgScatter.attr("width") - marginS.left - marginS.right;
-      const heightS = +svgScatter.attr("height") - marginS.top - marginS.bottom;
-      const scatterG = svgScatter.append("g").attr("transform", `translate(${marginS.left},${marginS.top})`);
-      const scatterData = filtered.filter(d => d[scatterX] && d.price);
-      if (scatterData.length > 0) {
-        const xExtent = d3.extent(scatterData, d => d[scatterX]);
-        const yExtent = d3.extent(scatterData, d => d.price);
-        const xScale = d3.scaleLinear().domain(xExtent).nice().range([0, widthS]);
-        const yScale = d3.scaleLinear().domain(yExtent).nice().range([heightS, 0]);
-        scatterG.append("g").attr("class","x axis")
-          .attr("transform", `translate(0,${heightS})`)
-          .call(d3.axisBottom(xScale));
-        scatterG.append("g").attr("class","y axis")
-          .call(d3.axisLeft(yScale));
-        scatterG.append("text")
-          .attr("class","x label")
-          .attr("x", widthS/2)
-          .attr("y", heightS + 34)
-          .attr("text-anchor","middle")
-          .attr("font-size","13px")
-          .text(getScatterLabel(scatterX));
-        scatterG.append("text")
-          .attr("class","y label")
-          .attr("x", -heightS/2)
-          .attr("y", -40)
-          .attr("transform","rotate(-90)")
-          .attr("text-anchor","middle")
-          .attr("font-size","13px")
-          .text("价格");
-        scatterG.selectAll("circle")
-          .data(scatterData)
-          .join("circle")
-          .attr("cx", d => xScale(d[scatterX]))
-          .attr("cy", d => yScale(d.price))
-          .attr("r", 4)
-          .attr("fill", "orange")
-          .attr("opacity", 0.7)
-          .on("mouseover", function(e, d){
-            d3.select(this).attr("stroke", "red").attr("stroke-width", 2);
-            showTooltip(e, d);
-          })
-          .on("mousemove", showTooltip)
-          .on("mouseout", function(){
-            d3.select(this).attr("stroke", null);
-            hideTooltip();
-          });
-      } else {
-        scatterG.append("text")
-          .attr("x", widthS/2)
-          .attr("y", heightS/2)
-          .attr("text-anchor","middle")
-          .attr("fill","#999")
-          .attr("font-size","15px")
-          .text("无有效数据");
-      }
-
-      // 4. 表格
-      const tbody = d3.select("#listingTable tbody");
-      tbody.selectAll("tr").remove();
-      tbody.selectAll("tr")
-        .data(filtered)
-        .join("tr")
-        .html(d => `
-          <td>${d.name || ""}</td>
-          <td>$${d.price}</td>
-          <td>${d.room_type}</td>
-          <td>${d.host_name || ""}</td>
-        `);
-    }
-
-    function getScatterLabel(key) {
-      switch(key) {
-        case "review_scores_rating": return "评分";
-        case "review_scores_accuracy": return "准确性";
-        case "review_scores_cleanliness": return "清洁度";
-        case "review_scores_checkin": return "入住";
-        case "review_scores_communication": return "沟通";
-        case "review_scores_location": return "位置";
-        case "review_scores_value": return "性价比";
-        default: return key;
-      }
-    }
-
-    // 工具提示
-    function showTooltip(event, d) {
-      const tt = d3.select("#tooltip");
-      tt.style("display", "block")
-        .style("left", (event.pageX+15)+"px")
-        .style("top", (event.pageY-10)+"px")
-        .html(`<b>${d.name}</b><br>价格: $${d.price}<br>类型: ${d.room_type}`);
-    }
-    function hideTooltip() {
-      d3.select("#tooltip").style("display", "none");
-    }
-
-    // 点击地图空白处取消区筛选
-    d3.select("body").on("click", function(e){
-      // 只要不是点击在path（区块）上就取消
-      if(e.target.tagName !== "path") {
+  gMap.append("g")
+    .attr("class","boroughs")
+    .selectAll("path")
+    .data(geojson.features)
+    .join("path")
+    .attr("class", d => "borough" + (selectedBorough && d === selectedBorough ? " selected" : ""))
+    .attr("d", geoPath)
+    .attr("fill", d => selectedBorough && d === selectedBorough ? "#ffe066" : "#eee")
+    .attr("stroke", "#999")
+    .on("click", function(e, d){
+      if(selectedBorough === d){
         selectedBorough = null;
-        update();
+      }else{
+        selectedBorough = d;
       }
+      update();
+      e.stopPropagation();
+    })
+    .append("title")
+    .text(d => d.properties.BoroName);
+
+  gMap.append("g").selectAll("text")
+    .data(geojson.features)
+    .join("text")
+    .attr("x", d => geoPath.centroid(d)[0])
+    .attr("y", d => geoPath.centroid(d)[1])
+    .attr("text-anchor", "middle")
+    .attr("dy", ".35em")
+    .attr("fill", "#666")
+    .attr("font-size", "12px")
+    .attr("pointer-events","none")
+    .text(d => d.properties.BoroName);
+
+  let geoScale = geoMapZoom.k || 1;
+  const bubbleG = gMap.append("g").attr("class","bubbles");
+  bubbleG.selectAll("circle")
+    .data(filtered)
+    .join("circle")
+    .attr("class", "bubble")
+    .attr("cx", d => {
+      const p = projection([d.longitude, d.latitude]);
+      return p ? p[0] : -9999;
+    })
+    .attr("cy", d => {
+      const p = projection([d.longitude, d.latitude]);
+      return p ? p[1] : -9999;
+    })
+    .attr("r", d => (Math.max(3, Math.sqrt(d.price)/2 + 3)) / geoScale)
+    .attr("fill", "skyblue")
+    .attr("stroke", "#333")
+    .on("mouseover", function(e, d){
+      d3.select(this).attr("stroke", "red").attr("stroke-width", 2/geoScale);
+      showTooltip(e, d);
+    })
+    .on("mousemove", showTooltip)
+    .on("mouseout", function(){
+      d3.select(this).attr("stroke", "#333").attr("stroke-width", 1/geoScale);
+      hideTooltip();
     });
-  </script>
+
+  const geoZoom = d3.zoom()
+    .scaleExtent([1, 16])
+    .on("zoom", function(event) {
+      geoMapZoom = event.transform;
+      update();
+    });
+  svgMap.call(geoZoom).on("dblclick.zoom", null);
+
+  // 散点图（无缩放）
+  const svgScatter = d3.select("#scatterPlot");
+  svgScatter.selectAll("*").remove();
+  const marginS = {top: 36, right: 30, bottom: 40, left: 56};
+  const widthS = +svgScatter.attr("width") - marginS.left - marginS.right;
+  const heightS = +svgScatter.attr("height") - marginS.top - marginS.bottom;
+  let gScatter = svgScatter.append("g").attr("class", "main-group")
+    .attr("transform", `translate(${marginS.left},${marginS.top})`);
+  let axisX = svgScatter.append("g").attr("class", "x axis");
+  let axisY = svgScatter.append("g").attr("class", "y axis");
+
+  const scatterData = filtered.filter(d => d[scatterX] && d.price);
+
+  if (scatterData.length > 0) {
+    const xExtent = d3.extent(scatterData, d => d[scatterX]);
+    const yExtent = d3.extent(scatterData, d => d.price);
+    const xScale = d3.scaleLinear().domain(xExtent).nice().range([0, widthS]);
+    const yScale = d3.scaleLinear().domain(yExtent).nice().range([heightS, 0]);
+
+    // 画坐标轴
+    axisX
+      .attr("transform", `translate(${marginS.left},${heightS+marginS.top})`)
+      .call(d3.axisBottom(xScale));
+    axisY
+      .attr("transform", `translate(${marginS.left},${marginS.top})`)
+      .call(d3.axisLeft(yScale));
+    // 画label
+    svgScatter.selectAll("text.x.label").data([0]).join("text")
+      .attr("class","x label")
+      .attr("x", marginS.left + widthS/2)
+      .attr("y", heightS + marginS.top + 34)
+      .attr("text-anchor","middle")
+      .attr("font-size","13px")
+      .text(getScatterLabel(scatterX));
+    svgScatter.selectAll("text.y.label").data([0]).join("text")
+      .attr("class","y label")
+      .attr("x", marginS.left - heightS/2)
+      .attr("y", marginS.top - 40)
+      .attr("transform",`rotate(-90,${marginS.left},${marginS.top})`)
+      .attr("text-anchor","middle")
+      .attr("font-size","13px")
+      .text("价格");
+
+    // 画点
+    gScatter.selectAll("circle")
+      .data(scatterData)
+      .join("circle")
+      .attr("cx", d => xScale(d[scatterX]))
+      .attr("cy", d => yScale(d.price))
+      .attr("r", 4)
+      .attr("fill", "orange")
+      .attr("opacity", 0.7)
+      .on("mouseover", function(e, d){
+        d3.select(this).attr("stroke", "red").attr("stroke-width", 2);
+        showTooltip(e, d);
+      })
+      .on("mousemove", showTooltip)
+      .on("mouseout", function(){
+        d3.select(this).attr("stroke", null);
+        hideTooltip();
+      });
+  } else {
+    gScatter.append("text")
+      .attr("x", widthS/2)
+      .attr("y", heightS/2)
+      .attr("text-anchor","middle")
+      .attr("fill","#999")
+      .attr("font-size","15px")
+      .text("无有效数据");
+    axisX.selectAll("*").remove();
+    axisY.selectAll("*").remove();
+  }
+
+  // 表格
+  const tbody = d3.select("#listingTable tbody");
+  tbody.selectAll("tr").remove();
+  tbody.selectAll("tr")
+    .data(filtered)
+    .join("tr")
+    .html(d => `
+      <td>${d.name || ""}</td>
+      <td>$${d.price}</td>
+      <td>${d.room_type}</td>
+      <td>${d.host_name || ""}</td>
+    `);
+}
+
+function getScatterLabel(key) {
+  switch(key) {
+    case "review_scores_rating": return "评分";
+    case "review_scores_accuracy": return "准确性";
+    case "review_scores_cleanliness": return "清洁度";
+    case "review_scores_checkin": return "入住";
+    case "review_scores_communication": return "沟通";
+    case "review_scores_location": return "位置";
+    case "review_scores_value": return "性价比";
+    default: return key;
+  }
+}
+
+function showTooltip(event, d) {
+  const tt = d3.select("#tooltip");
+  tt.style("display", "block")
+    .style("left", (event.pageX+15)+"px")
+    .style("top", (event.pageY-10)+"px")
+    .html(`<b>${d.name}</b><br>价格: $${d.price}<br>类型: ${d.room_type}`);
+}
+function hideTooltip() {
+  d3.select("#tooltip").style("display", "none");
+}
+
+// 点击地图空白处取消区筛选
+d3.select("body").on("click", function(e){
+  if(e.target.tagName !== "path") {
+    selectedBorough = null;
+    update();
+  }
+});
+</script>
 </body>
 </html>
